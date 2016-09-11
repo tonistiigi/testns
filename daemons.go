@@ -1,6 +1,7 @@
 package testns
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -85,7 +87,7 @@ func NewDaemonPool(config PoolConfig) (*DaemonPool, error) {
 	}
 
 	cmd := exec.Command(dockerdBinary, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Pdeathsig: syscall.SIGKILL}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Pdeathsig: syscall.SIGINT}
 	logFile, err := os.OpenFile(filepath.Join(dp.mainPath(), "logs"), os.O_WRONLY|os.O_CREATE, 0600)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to open %v", filepath.Join(dp.mainPath(), "stderr"))
@@ -109,6 +111,31 @@ func NewDaemonPool(config PoolConfig) (*DaemonPool, error) {
 		return nil, err
 	}
 
+	// f, err := os.Open("/busybox.tar")
+	// if err != nil {
+	// 	return nil, errors.Wrapf(err, "could not open /busybox.tar")
+	// }
+	// defer f.Close()
+	// resp, err := sockRequestRawToDaemon("POST", "/images/load", f, "application/x-tar", dp.mainSocket())
+	// if err != nil {
+	// 	return nil, err
+	// }
+	// if _, err = io.Copy(ioutil.Discard, resp.Body); err != nil {
+	// 	return nil, errors.Wrapf(err, "invalid reading /images/load")
+	// }
+
+	cmd = exec.Command("docker", "-H", dp.mainSocket(), "load", "-i", "/busybox.tar")
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return nil, errors.Wrapf(err, "error loading busybox")
+	}
+
+	// resp, err = sockRequestRawToDaemon("GET", "/images/json", nil, "", dp.mainSocket())
+	// if err != nil {
+	// 	return nil, err
+	// }
+	// io.Copy(os.Stderr, resp.Body)
 	return dp, nil
 }
 
@@ -180,15 +207,43 @@ func (dp *DaemonPool) Close() error {
 
 type Daemon struct {
 	config Config
+	pool   *DaemonPool
+	id     string
+	pid    int
 }
 
 func (dp *DaemonPool) NewDaemon(config Config) (*Daemon, error) {
 	select {
 	case <-dp.exited:
 		return nil, errors.Errorf("could not create new daemon, pool closed")
+	default:
 	}
 
-	return nil, fmt.Errorf("NewDaemon() not implemented")
+	cmd := exec.Command("docker", "-H", dp.mainSocket(), "run", "--privileged", "-d", "busybox", "top")
+	buf := &bytes.Buffer{}
+	cmd.Stdout = buf // todo: error reporting
+	if err := cmd.Run(); err != nil {
+		return nil, errors.Wrapf(err, "could not start container for daemon")
+	}
+	d := &Daemon{
+		config: config,
+		pool:   dp,
+		id:     strings.TrimSpace(buf.String()),
+	}
+
+	cmd = exec.Command("docker", "-H", dp.mainSocket(), "inspect", "--format", "{{.State.Pid}}", d.id)
+	buf.Reset()
+	cmd.Stdout = buf
+	if err := cmd.Run(); err != nil {
+		return nil, errors.Wrapf(err, "could not start container for daemon")
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(buf.String()))
+	if err != nil {
+		return nil, errors.Wrapf(err, "invalid pid %q", buf.String())
+	}
+	d.pid = pid
+
+	return d, nil
 }
 
 func sockRequestRawToDaemon(method, endpoint string, data io.Reader, ct, protoAddr string) (*http.Response, error) {
@@ -227,10 +282,18 @@ func (d *Daemon) Stop() error {
 }
 
 func (d *Daemon) Command(name string, arg ...string) *Command {
-	return nil
+	c := &Command{
+		daemon: d,
+		args:   append([]string{name}, arg...),
+	}
+	return c
 }
 
 func (d *Daemon) ID() string {
+	return ""
+}
+
+func (d *Daemon) IP() string {
 	return ""
 }
 
@@ -251,7 +314,13 @@ func (c *Command) Start() error {
 }
 
 func (c *Command) Run() error {
-	return fmt.Errorf("Command.Run() not implemented")
+	// todo: check daemon running
+	cmd := &exec.Cmd{}
+	cmd.Path = "/proc/self/exe"
+	cmd.Args = append([]string{reExecName, strconv.Itoa(c.daemon.pid)}, c.args...)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func (c *Command) Wait() error {
@@ -260,6 +329,8 @@ func (c *Command) Wait() error {
 }
 
 type Command struct {
+	daemon *Daemon
+	args   []string
 }
 
 type Config struct {
