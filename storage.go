@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/pkg/errors"
 )
 
 func (c *sharedStoragePathConfig) Equals(c2 *sharedStoragePathConfig) bool {
@@ -40,7 +42,7 @@ func NewSharedStorage(root string) (Storage, error) {
 		return nil, errors.Errorf("failed to create new storage: %v exists", root)
 	}
 	if !os.IsNotExist(err) {
-		return nil, errors.Wrap(err, "failed to stat root directory %v", root)
+		return nil, errors.Wrapf(err, "failed to stat root directory %v", root)
 	}
 	if err := os.MkdirAll(root, 0600); err != nil {
 		return nil, errors.Wrapf(err, "failed to create %v", root)
@@ -69,7 +71,7 @@ func (s *sharedStorage) Get(config Config) (ReleasableStoragePath, error) {
 
 	path := filepath.Join(s.root, randomID())
 	if err := os.Mkdir(path, 0600); err != nil {
-		return nil, errors.Wrap(err, "failed to create %v", path)
+		return nil, errors.Wrapf(err, "failed to create %v", path)
 	}
 	sp := &sharedStoragePath{
 		sharedStorage: s,

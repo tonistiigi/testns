@@ -1,17 +1,13 @@
 package testns
 
 import (
-	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"testing"
 
 	"github.com/go-check/check"
 	checkers "github.com/vdemeester/shakers"
 )
-
-func Test(t *testing.T) { check.TestingT(t) }
 
 type StorageSuite struct{}
 
@@ -23,7 +19,6 @@ func (s *StorageSuite) TestSharedStorage(c *check.C) {
 	defer os.RemoveAll(tmpDir)
 	tmpDir = filepath.Join(tmpDir, "storage")
 	ss, err := NewSharedStorage(tmpDir)
-	fmt.Fprintf(os.Stderr, "%+v", err)
 	c.Assert(err, checkers.IsNil)
 
 	sp1, err := ss.Get(Config{StorageDriver: "overlay", FrozenImages: []string{"busybox:latest"}})
