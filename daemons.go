@@ -77,18 +77,37 @@ func NewDaemonPool(config PoolConfig) (*DaemonPool, error) {
 		exited: make(chan struct{}),
 	}
 
-	if err := os.MkdirAll(dp.mainPath(), 0600); err != nil {
+	if err := os.MkdirAll(dp.storageDir(), 0600); err != nil {
 		return nil, errors.Wrapf(err, "failed to create %v", dp.mainPath())
 	}
 
-	args := []string{"-D", "-g", dp.storageDir(), "--exec-root", dp.execDir(), "--pidfile", dp.pidFile(), "--iptables=false", "-H", dp.mainSocket()}
+	args := []string{"-D", "-g", filepath.Join(dp.storageDir(), "graph"), "--exec-root", dp.execDir(), "--pidfile", dp.pidFile(), "--iptables=false", "-H", dp.mainSocket()}
 	if config.StorageDriver != "" {
 		args = append(args, "-s", config.StorageDriver)
 	}
 
+	if err := syscall.Mount(dp.storageDir(), dp.storageDir(), "", uintptr(syscall.MS_BIND), ""); err != nil {
+		return nil, errors.Wrapf(err, "failed to bind %v", dp.storageDir())
+	}
+	defer func() {
+		if err := syscall.Unmount(dp.storageDir(), 0); err != nil {
+			logrus.Errorf("failed to unmount %v: %+v", dp.storageDir(), err)
+		}
+	}()
+	if err := syscall.Mount("", dp.storageDir(), "none", uintptr(syscall.MS_PRIVATE), ""); err != nil {
+		return nil, errors.Wrapf(err, "failed to make %v private", dp.storageDir())
+	}
+
 	cmd := exec.Command(dockerdBinary, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Pdeathsig: syscall.SIGINT}
-	logFile, err := os.OpenFile(filepath.Join(dp.mainPath(), "logs"), os.O_WRONLY|os.O_CREATE, 0600)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid:     true,
+		Pdeathsig:  syscall.SIGINT,
+		Cloneflags: uintptr(CLONE_NEWNS),
+	}
+	if err := os.MkdirAll(filepath.Join(dp.config.Root, mainID), 0600); err != nil {
+		return nil, errors.Wrapf(err, "failed to create %v", filepath.Join(dp.config.Root, mainID))
+	}
+	logFile, err := os.OpenFile(filepath.Join(dp.config.Root, mainID, "logs"), os.O_WRONLY|os.O_CREATE, 0600)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to open %v", filepath.Join(dp.mainPath(), "stderr"))
 	}
@@ -148,11 +167,11 @@ func (dp *DaemonPool) mainSocket() string {
 }
 
 func (dp *DaemonPool) storageDir() string {
-	return filepath.Join(dp.config.Root, "storage", mainID)
+	return filepath.Join(dp.mainPath(), "storage")
 }
 
 func (dp *DaemonPool) execDir() string {
-	return filepath.Join(dp.mainPath(), "exec-root")
+	return filepath.Join(dp.storageDir(), "exec-root")
 }
 
 func (dp *DaemonPool) pidFile() string {
@@ -206,10 +225,12 @@ func (dp *DaemonPool) Close() error {
 }
 
 type Daemon struct {
-	config Config
-	pool   *DaemonPool
-	id     string
-	pid    int
+	mu          sync.Mutex
+	config      Config
+	pool        *DaemonPool
+	id          string
+	pid         int
+	storageDone bool
 }
 
 func (dp *DaemonPool) NewDaemon(config Config) (*Daemon, error) {
@@ -273,7 +294,17 @@ func sockRequestRawToDaemon(method, endpoint string, data io.Reader, ct, protoAd
 	return resp, nil
 }
 
+func (d *Daemon) rootDir() string {
+	return filepath.Join(d.pool.config.Root, d.id)
+}
+
+func (d *Daemon) prepareStorageDir() {
+
+	// d.pool.Storage.Get(d.config)
+}
+
 func (d *Daemon) Start(args ...string) error {
+
 	return fmt.Errorf("Daemon.Start() not implemented")
 }
 
@@ -283,14 +314,14 @@ func (d *Daemon) Stop() error {
 
 func (d *Daemon) Command(name string, arg ...string) *Command {
 	c := &Command{
+		Cmd:    exec.Command(name, arg...),
 		daemon: d,
-		args:   append([]string{name}, arg...),
 	}
 	return c
 }
 
 func (d *Daemon) ID() string {
-	return ""
+	return d.id
 }
 
 func (d *Daemon) IP() string {
@@ -298,6 +329,10 @@ func (d *Daemon) IP() string {
 }
 
 func (d *Daemon) Root() string {
+	return ""
+}
+
+func (d *Daemon) Gateway() string {
 	return ""
 }
 
@@ -310,27 +345,52 @@ func (d *Daemon) Close() error {
 }
 
 func (c *Command) Start() error {
-	return fmt.Errorf("Command.Start() not implemented")
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.started {
+		return errors.Errorf("command already started")
+	}
+	c.started = true
+	cmd := *c.Cmd
+	cmd.Path = "/proc/self/exe"
+	cmd.Args = append([]string{reExecName, strconv.Itoa(c.daemon.pid), c.Cmd.Path}, c.Args...)
+	cmd.ExtraFiles = nil
+	cmd.SysProcAttr = nil
+	if err := cmd.Start(); err != nil {
+		return errors.Wrapf(err, "could not start process %+v", cmd.Args)
+	}
+	c.Cmd.Process = cmd.Process
+	go cmd.Wait() // clean up pipes etc
+	return nil
 }
 
 func (c *Command) Run() error {
-	// todo: check daemon running
-	cmd := &exec.Cmd{}
-	cmd.Path = "/proc/self/exe"
-	cmd.Args = append([]string{reExecName, strconv.Itoa(c.daemon.pid)}, c.args...)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if err := c.Start(); err != nil {
+		return err
+	}
+	return c.Wait()
 }
 
 func (c *Command) Wait() error {
-	return fmt.Errorf("Command.Wait() not implemented")
-
+	c.mu.Lock()
+	if !c.started {
+		c.mu.Unlock()
+		return errors.Errorf("command not started")
+	}
+	c.mu.Unlock()
+	state, err := c.Cmd.Process.Wait()
+	if err != nil {
+		return errors.Wrapf(err, "command %+v exited", c.Cmd.Args)
+	}
+	c.Cmd.ProcessState = state
+	return nil
 }
 
 type Command struct {
-	daemon *Daemon
-	args   []string
+	*exec.Cmd
+	mu      sync.Mutex
+	daemon  *Daemon
+	started bool
 }
 
 type Config struct {
