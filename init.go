@@ -26,7 +26,8 @@ func init() {
 			if err := syscall.Mount("proc", "/proc", "proc", uintptr(syscall.MS_NOEXEC|syscall.MS_NOSUID|syscall.MS_NODEV), ""); err != nil {
 				panic(err)
 			}
-			cmd := exec.Command(os.Args[2], os.Args[3:]...)
+			cmd := exec.Command(os.Args[3], os.Args[4:]...)
+			cmd.Path = os.Args[2]
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			cmd.Run()

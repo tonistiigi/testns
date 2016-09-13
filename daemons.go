@@ -19,6 +19,7 @@ import (
 
 	"github.com/Sirupsen/logrus"
 	"github.com/pkg/errors"
+	"github.com/tonistiigi/testns/baseimage"
 )
 
 const mainID = "_main"
@@ -143,11 +144,14 @@ func NewDaemonPool(config PoolConfig) (*DaemonPool, error) {
 	// 	return nil, errors.Wrapf(err, "invalid reading /images/load")
 	// }
 
-	cmd = exec.Command("docker", "-H", dp.mainSocket(), "load", "-i", "/busybox.tar")
+	imageData := baseimage.ImageData()
+	defer imageData.Close()
+	cmd = exec.Command("docker", "-H", dp.mainSocket(), "load")
+	cmd.Stdin = imageData
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return nil, errors.Wrapf(err, "error loading busybox")
+		return nil, errors.Wrapf(err, "error loading base image")
 	}
 
 	// resp, err = sockRequestRawToDaemon("GET", "/images/json", nil, "", dp.mainSocket())
@@ -240,7 +244,7 @@ func (dp *DaemonPool) NewDaemon(config Config) (*Daemon, error) {
 	default:
 	}
 
-	cmd := exec.Command("docker", "-H", dp.mainSocket(), "run", "--privileged", "-d", "busybox", "top")
+	cmd := exec.Command("docker", "-H", dp.mainSocket(), "run", "--privileged", "-d", "--stop-signal", "sigkill", "base")
 	buf := &bytes.Buffer{}
 	cmd.Stdout = buf // todo: error reporting
 	if err := cmd.Run(); err != nil {
@@ -356,11 +360,13 @@ func (c *Command) Start() error {
 	cmd.Args = append([]string{reExecName, strconv.Itoa(c.daemon.pid), c.Cmd.Path}, c.Args...)
 	cmd.ExtraFiles = nil
 	cmd.SysProcAttr = nil
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		return errors.Wrapf(err, "could not start process %+v", cmd.Args)
 	}
 	c.Cmd.Process = cmd.Process
-	go cmd.Wait() // clean up pipes etc
+	c.cmd = &cmd
 	return nil
 }
 
@@ -378,11 +384,10 @@ func (c *Command) Wait() error {
 		return errors.Errorf("command not started")
 	}
 	c.mu.Unlock()
-	state, err := c.Cmd.Process.Wait()
-	if err != nil {
+	if err := c.cmd.Wait(); err != nil {
 		return errors.Wrapf(err, "command %+v exited", c.Cmd.Args)
 	}
-	c.Cmd.ProcessState = state
+	c.Cmd.ProcessState = c.cmd.ProcessState
 	return nil
 }
 
@@ -391,6 +396,7 @@ type Command struct {
 	mu      sync.Mutex
 	daemon  *Daemon
 	started bool
+	cmd     *exec.Cmd
 }
 
 type Config struct {
