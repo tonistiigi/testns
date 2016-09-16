@@ -10,10 +10,10 @@ import (
 	"github.com/vishvananda/netns"
 )
 
-const reExecName = "docker-test-daemon-sandbox"
+const reExecName = "testns.namespace"
 const dockerdBinary = "dockerd"
 
-const CLONE_NEWNS = 0x00020000 /* New namespace group? */
+const _CLONE_NEWNS = 0x00020000 /* New namespace group? */
 
 func init() {
 	if os.Args[0] == reExecName {
@@ -56,7 +56,7 @@ func init() {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stdout
 		cmd.SysProcAttr = &syscall.SysProcAttr{
-			Unshareflags: uintptr(CLONE_NEWNS),
+			Cloneflags: uintptr(_CLONE_NEWNS),
 		}
 		cmd.Run()
 		os.Exit(0)

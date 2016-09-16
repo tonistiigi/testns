@@ -2,7 +2,7 @@ package testns
 
 import "fmt"
 
-type FrozenImageProvider interface {
+type FrozenImagesProvider interface {
 	LoadImage(string) error
 }
 

@@ -2,6 +2,7 @@ package testns
 
 import (
 	"crypto/rand"
+	"encoding"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -10,23 +11,23 @@ import (
 	"github.com/pkg/errors"
 )
 
-func (c *sharedStoragePathConfig) Equals(c2 *sharedStoragePathConfig) bool {
-	if c.driver != c2.driver {
-		return false
-	}
-	if len(c.frozenImages) != len(c2.frozenImages) {
-		return false
-	}
-	for i := range c.frozenImages {
-		if c.frozenImages[i] != c2.frozenImages[i] {
-			return false
-		}
-	}
-	return true
-}
+// func (c *sharedStoragePathConfig) Equals(c2 *sharedStoragePathConfig) bool {
+// 	if c.driver != c2.driver {
+// 		return false
+// 	}
+// 	if len(c.frozenImages) != len(c2.frozenImages) {
+// 		return false
+// 	}
+// 	for i := range c.frozenImages {
+// 		if c.frozenImages[i] != c2.frozenImages[i] {
+// 			return false
+// 		}
+// 	}
+// 	return true
+// }
 
 type Storage interface {
-	Get(Config) (ReleasableStoragePath, error)
+	Get(encoding.TextMarshaler) (ReleasableStoragePath, error)
 	Clean() error
 }
 
@@ -47,24 +48,24 @@ func NewSharedStorage(root string) (Storage, error) {
 	if err := os.MkdirAll(root, 0600); err != nil {
 		return nil, errors.Wrapf(err, "failed to create %v", root)
 	}
-	ss := &sharedStorage{root: root, paths: make(map[*sharedStoragePath]bool)}
-	return ss, nil
+	return &sharedStorage{root: root}, nil
 }
 
-func (s *sharedStorage) Get(config Config) (ReleasableStoragePath, error) {
-	spc := &sharedStoragePathConfig{
-		driver:       config.StorageDriver,
-		frozenImages: append([]string{}, config.FrozenImages...),
-	}
+func (s *sharedStorage) Get(key encoding.TextMarshaler) (ReleasableStoragePath, error) {
 	s.Lock()
 	defer s.Unlock()
 
-	for p, used := range s.paths {
-		if used {
+	k, err := key.MarshalText()
+	if err != nil {
+		return nil, errors.Errorf("could not marshal input %v", key)
+	}
+
+	for _, p := range s.paths {
+		if p.used {
 			continue
 		}
-		if p.config.Equals(spc) {
-			s.paths[p] = true
+		if p.key == string(k) {
+			p.used = true
 			return p, nil
 		}
 	}
@@ -76,18 +77,17 @@ func (s *sharedStorage) Get(config Config) (ReleasableStoragePath, error) {
 	sp := &sharedStoragePath{
 		sharedStorage: s,
 		path:          path,
-		config:        *spc,
+		key:           string(k),
+		used:          true,
 	}
-	s.paths[sp] = true
+	s.paths = append(s.paths, sp)
 	return sp, nil
 }
 
 func (s *sharedStorage) release(sp *sharedStoragePath) {
 	s.Lock()
 	defer s.Unlock()
-	if _, ok := s.paths[sp]; ok {
-		s.paths[sp] = false
-	}
+	sp.used = false
 }
 
 func (s *sharedStorage) Clean() error {
@@ -110,14 +110,15 @@ func randomID() string {
 
 type sharedStorage struct {
 	sync.Mutex
-	paths map[*sharedStoragePath]bool
+	paths []*sharedStoragePath
 	root  string
 }
 
 type sharedStoragePath struct {
 	*sharedStorage
-	path   string
-	config sharedStoragePathConfig
+	path string
+	key  string
+	used bool
 }
 
 type sharedStoragePathConfig struct {

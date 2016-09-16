@@ -9,11 +9,7 @@ import (
 	checkers "github.com/vdemeester/shakers"
 )
 
-type StorageSuite struct{}
-
-var _ = check.Suite(&StorageSuite{})
-
-func (s *StorageSuite) TestSharedStorage(c *check.C) {
+func (s *TestSuite) TestSharedStorage(c *check.C) {
 	tmpDir, err := ioutil.TempDir("", "sharedstorage")
 	c.Assert(err, checkers.IsNil)
 	defer os.RemoveAll(tmpDir)
@@ -21,7 +17,7 @@ func (s *StorageSuite) TestSharedStorage(c *check.C) {
 	ss, err := NewSharedStorage(tmpDir)
 	c.Assert(err, checkers.IsNil)
 
-	sp1, err := ss.Get(Config{StorageDriver: "overlay", FrozenImages: []string{"busybox:latest"}})
+	sp1, err := ss.Get(DockerdConfig{StorageDriver: "overlay", FrozenImages: []string{"busybox:latest"}})
 	c.Assert(err, checkers.IsNil)
 
 	c.Assert(sp1.Path(), checkers.Matches, filepath.Join(tmpDir, ".+$"))
@@ -30,10 +26,10 @@ func (s *StorageSuite) TestSharedStorage(c *check.C) {
 	c.Assert(err, checkers.IsNil)
 	c.Assert(fi.IsDir(), checkers.True)
 
-	sp2, err := ss.Get(Config{StorageDriver: "overlay", FrozenImages: []string{"busybox:latest"}})
+	sp2, err := ss.Get(DockerdConfig{StorageDriver: "overlay", FrozenImages: []string{"busybox:latest"}})
 	c.Assert(err, checkers.IsNil)
 
-	sp3, err := ss.Get(Config{StorageDriver: "overlay", FrozenImages: []string{"busybox:latest", "alpine:latest"}})
+	sp3, err := ss.Get(DockerdConfig{StorageDriver: "overlay", FrozenImages: []string{"busybox:latest", "alpine:latest"}})
 	c.Assert(err, checkers.IsNil)
 
 	c.Assert(sp2.Path(), checkers.Not(checkers.Equals), sp1.Path())
@@ -41,7 +37,7 @@ func (s *StorageSuite) TestSharedStorage(c *check.C) {
 
 	sp2.Release()
 
-	sp4, err := ss.Get(Config{StorageDriver: "overlay", FrozenImages: []string{"busybox:latest"}})
+	sp4, err := ss.Get(DockerdConfig{StorageDriver: "overlay", FrozenImages: []string{"busybox:latest"}})
 	c.Assert(err, checkers.IsNil)
 
 	c.Assert(sp4.Path(), checkers.Equals, sp2.Path())
@@ -49,17 +45,17 @@ func (s *StorageSuite) TestSharedStorage(c *check.C) {
 	sp1.Release()
 	sp3.Release()
 
-	sp5, err := ss.Get(Config{StorageDriver: "overlay", FrozenImages: []string{"busybox:latest", "alpine:latest"}})
+	sp5, err := ss.Get(DockerdConfig{StorageDriver: "overlay", FrozenImages: []string{"busybox:latest", "alpine:latest"}})
 	c.Assert(err, checkers.IsNil)
 
 	c.Assert(sp5.Path(), checkers.Equals, sp3.Path())
 
-	sp6, err := ss.Get(Config{StorageDriver: "overlay2", FrozenImages: []string{"busybox:latest"}})
+	sp6, err := ss.Get(DockerdConfig{StorageDriver: "overlay2", FrozenImages: []string{"busybox:latest"}})
 	c.Assert(err, checkers.IsNil)
 
 	c.Assert(sp6.Path(), checkers.Not(checkers.Equals), sp1.Path())
 
-	sp7, err := ss.Get(Config{StorageDriver: "overlay", FrozenImages: []string{"busybox:latest"}})
+	sp7, err := ss.Get(DockerdConfig{StorageDriver: "overlay", FrozenImages: []string{"busybox:latest"}})
 	c.Assert(err, checkers.IsNil)
 
 	c.Assert(sp7.Path(), checkers.Equals, sp1.Path())
@@ -70,7 +66,7 @@ func (s *StorageSuite) TestSharedStorage(c *check.C) {
 	c.Assert(os.IsNotExist(err), checkers.True)
 }
 
-func (s *StorageSuite) TestRandomID(c *check.C) {
+func (s *TestSuite) TestRandomID(c *check.C) {
 	id := randomID()
 	c.Assert(id, checkers.HasLen, 32)
 	c.Assert(id, checkers.Not(checkers.Equals), randomID())
