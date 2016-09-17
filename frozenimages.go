@@ -3,12 +3,12 @@ package testns
 import "fmt"
 
 type FrozenImagesProvider interface {
-	LoadImage(string) error
+	LoadImage(string, string) error
 }
 
 type ImagePuller struct{}
 
-func (fip *ImagePuller) LoadImage(ref string) error {
+func (fip *ImagePuller) LoadImage(srcName, destName string) error {
 	// add cache layer
 	return fmt.Errorf("ImagePuller not implemented")
 }

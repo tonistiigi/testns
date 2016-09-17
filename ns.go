@@ -32,20 +32,6 @@ func validateEnvironment() error {
 	return nil // todo
 }
 
-type DockerdConfig struct {
-	Namespace            *Namespace
-	Args                 []string
-	StorageDriver        string
-	Storage              *Storage
-	FrozenImages         []string
-	FrozenImagesProvider FrozenImagesProvider
-}
-
-func (d DockerdConfig) MarshalText() ([]byte, error) {
-	// sort frozen images?
-	return []byte(fmt.Sprintf("%+v", d)), nil
-}
-
 type NamespaceConfig struct {
 	Network      string
 	Unprivileged bool
@@ -108,13 +94,6 @@ func NewPool(root string) (*Pool, error) {
 		exited: make(chan struct{}),
 	}
 
-	logFilePath := filepath.Join(p.root, "docker.log")
-	logFile, err := os.OpenFile(logFilePath, os.O_WRONLY|os.O_CREATE, 0600)
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to open %v", logFilePath)
-	}
-	defer logFile.Close()
-
 	if err := os.MkdirAll(p.storageDir(), 0600); err != nil {
 		return nil, errors.Wrapf(err, "failed to create %v", p.storageDir())
 	}
@@ -143,6 +122,11 @@ func NewPool(root string) (*Pool, error) {
 		Pdeathsig:  syscall.SIGINT, // todo: broken daemons may leak here
 		Cloneflags: uintptr(_CLONE_NEWNS),
 	}
+	logger, err := attachLogger(cmd, p.root+"/", syscall.Stderr)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := cmd.Start(); err != nil {
 		unmount()
 		return nil, errors.Wrapf(err, "failed to start %v %v", cmd.Path, cmd.Args)
@@ -158,6 +142,7 @@ func NewPool(root string) (*Pool, error) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		p.err = err
+		logger.Close()
 		close(p.exited)
 		cancel()
 	}()
@@ -360,32 +345,135 @@ func (ns *Namespace) Close() error {
 
 type Command struct {
 	*exec.Cmd
-	mu      sync.Mutex
-	ns      *Namespace
-	started bool
-	cmd     *exec.Cmd
+	mu             sync.Mutex
+	ns             *Namespace
+	started        bool
+	cmd            *exec.Cmd
+	closeAfterWait []io.Closer
+	logInc         int
 }
 
-func (c *Command) Start() error {
+func (c *Command) Start() (err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if len(c.Cmd.Args) == 0 {
+		return errors.Errorf("invalid empty arguments")
+	}
 	if c.started {
 		return errors.Errorf("command already started")
 	}
 	c.started = true
 	cmd := *c.Cmd
-	cmd.Path = "/proc/self/exe" // todo: cross-platform
-	cmd.Args = append([]string{reExecName, strconv.Itoa(c.ns.pid), c.Cmd.Path}, c.Args...)
 	cmd.ExtraFiles = nil
 	cmd.SysProcAttr = nil
-	cmd.Stdout = os.Stdout // todo: log
-	cmd.Stderr = os.Stderr
+
+	c.logInc++
+	var closeOnError []io.Closer
+
+	if err := os.MkdirAll(c.ns.Dir(), 0600); err != nil {
+		return errors.Wrapf(err, "failed to create %v", c.ns.Dir())
+	}
+
+	defer func() {
+		if err != nil {
+			for _, c := range closeOnError {
+				c.Close()
+			}
+		}
+	}()
+
+	pfx := filepath.Join(c.ns.Dir(), fmt.Sprintf("%v-", c.logInc))
+	l, err := attachLogger(&cmd, pfx, syscall.Stdout)
+	if err != nil {
+		return err
+	}
+	closeOnError = append(closeOnError, l)
+
+	l, err = attachLogger(&cmd, pfx, syscall.Stderr)
+	if err != nil {
+		return err
+	}
+	closeOnError = append(closeOnError, l)
+
+	cmd.Path = "/proc/self/exe" // todo: cross-platform
+	cmd.Args = append([]string{reExecName, strconv.Itoa(c.ns.pid), c.Cmd.Path}, c.Args...)
+
 	if err := cmd.Start(); err != nil {
 		return errors.Wrapf(err, "could not start process %+v", cmd.Args)
 	}
 	c.Cmd.Process = cmd.Process
 	c.cmd = &cmd
+	c.closeAfterWait = closeOnError
 	return nil
+}
+
+var streamNames = map[int]string{
+	syscall.Stdout: "stdout",
+	syscall.Stderr: "stderr",
+}
+
+// newLogger wraps iowriter with a logfile. lock is needed before calling
+func attachLogger(cmd *exec.Cmd, pfx string, stream int) (*logger, error) {
+	dir, base := filepath.Split(pfx)
+	streamName, ok := streamNames[stream]
+	if !ok {
+		return nil, errors.Errorf("invalid stream %v", stream)
+	}
+	var w io.Writer
+	if stream == syscall.Stdout {
+		w = cmd.Stdout
+	} else if stream == syscall.Stderr {
+		w = cmd.Stderr
+	}
+	fn := filepath.Join(dir, fmt.Sprintf("%v%v.%v.log", base, cmd.Args[0], streamName))
+	f, err := os.OpenFile(fn, os.O_WRONLY|os.O_CREATE, 0600)
+	if err != nil {
+		return nil, errors.Wrapf(err, "could not open %v", fn)
+	}
+	writers := []io.Writer{f}
+	if w != nil {
+		writers = append(writers, w)
+	}
+	l := &logger{
+		cmd:       cmd,
+		startTime: time.Now(),
+		f:         f,
+		Writer:    io.MultiWriter(writers...),
+	}
+	l.intro()
+	if stream == syscall.Stdout {
+		cmd.Stdout = l
+	} else if stream == syscall.Stderr {
+		cmd.Stderr = l
+	}
+	return l, nil
+}
+
+type logger struct {
+	startTime time.Time
+	f         *os.File
+	cmd       *exec.Cmd
+	io.Writer
+}
+
+func (l *logger) intro() {
+	fmt.Fprintf(l.f, "starting: %v %+v\n", l.startTime, l.cmd.Args)
+}
+
+func (l *logger) outro() {
+	exitCode := -1
+	if l.cmd.ProcessState != nil {
+		if ws, ok := l.cmd.ProcessState.Sys().(syscall.WaitStatus); ok {
+			exitCode = ws.ExitStatus()
+		}
+	}
+	now := time.Now()
+	fmt.Fprintf(l.f, "exited: %v\nduration: %v\nexit code: %v\n", now, now.Sub(l.startTime).Seconds(), exitCode)
+}
+
+func (l *logger) Close() error {
+	l.outro()
+	return l.f.Close()
 }
 
 func (c *Command) Run() error {
@@ -402,23 +490,10 @@ func (c *Command) Wait() error {
 		return errors.Errorf("command not started")
 	}
 	c.mu.Unlock()
-	if err := c.cmd.Wait(); err != nil {
-		return errors.Wrapf(err, "command %+v exited", c.Cmd.Args)
+	err := c.cmd.Wait() // not wrapping in case handler can't unwrap
+	for _, c := range c.closeAfterWait {
+		c.Close()
 	}
 	c.Cmd.ProcessState = c.cmd.ProcessState
-	return nil
-}
-
-type Daemon struct{}
-
-func (d *Daemon) Start(args ...string) error {
-	return fmt.Errorf("Daemon.Start() not implemented")
-}
-
-func (d *Daemon) Stop() error {
-	return fmt.Errorf("Daemon.Stop() not implemented")
-}
-
-func (d *Daemon) Reset() error {
-	return fmt.Errorf("Daemon.Reset() not implemented")
+	return err
 }

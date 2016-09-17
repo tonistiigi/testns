@@ -16,4 +16,4 @@ goals:
 
 - Shared daemons. Daemon can be reused without restarting, content will be reset to initial set of frozen images.
 
-
+- Every executed command stores its logs

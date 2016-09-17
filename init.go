@@ -10,7 +10,7 @@ import (
 	"github.com/vishvananda/netns"
 )
 
-const reExecName = "testns.namespace"
+const reExecName = "testns-run-namespace"
 const dockerdBinary = "dockerd"
 
 const _CLONE_NEWNS = 0x00020000 /* New namespace group? */
@@ -30,7 +30,13 @@ func init() {
 			cmd.Path = os.Args[2]
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
-			cmd.Run()
+			if err := cmd.Run(); err != nil {
+				if err, ok := err.(*exec.ExitError); ok {
+					if ws, ok := err.Sys().(syscall.WaitStatus); ok {
+						os.Exit(ws.ExitStatus())
+					}
+				}
+			}
 			os.Exit(0)
 		}
 
@@ -58,7 +64,13 @@ func init() {
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			Cloneflags: uintptr(_CLONE_NEWNS),
 		}
-		cmd.Run()
+		if err := cmd.Run(); err != nil {
+			if err, ok := err.(*exec.ExitError); ok {
+				if ws, ok := err.Sys().(syscall.WaitStatus); ok {
+					os.Exit(ws.ExitStatus())
+				}
+			}
+		}
 		os.Exit(0)
 
 		// SetNS()
