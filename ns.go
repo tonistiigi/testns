@@ -2,6 +2,7 @@ package testns
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -120,13 +121,12 @@ func NewPool(root string) (*Pool, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid:     true,
 		Pdeathsig:  syscall.SIGINT, // todo: broken daemons may leak here
-		Cloneflags: uintptr(_CLONE_NEWNS),
+		Cloneflags: uintptr(syscall.CLONE_NEWNS),
 	}
 	logger, err := attachLogger(cmd, p.root+"/", syscall.Stderr)
 	if err != nil {
 		return nil, err
 	}
-
 	if err := cmd.Start(); err != nil {
 		unmount()
 		return nil, errors.Wrapf(err, "failed to start %v %v", cmd.Path, cmd.Args)
@@ -191,7 +191,7 @@ loop0:
 			}
 			logrus.Debugf("error on /_ping  %+v", err)
 			select {
-			case <-time.After(500 * time.Millisecond):
+			case <-time.After(1000 * time.Millisecond):
 				continue loop0
 			case <-ctx.Done():
 				return errors.Wrapf(err, "could not reach /_ping")
@@ -238,6 +238,7 @@ type Namespace struct {
 	pool   *Pool
 	id     string
 	pid    int
+	mntns  *os.File
 }
 
 func (p *Pool) NewNamespace(config NamespaceConfig) (*Namespace, error) {
@@ -340,7 +341,77 @@ func (ns *Namespace) Gateway() string {
 }
 
 func (ns *Namespace) Close() error {
-	return fmt.Errorf("Daemon.Close() not implemented")
+	return fmt.Errorf("ns.Close() not implemented")
+}
+
+func (ns *Namespace) cmdStart(cmd *exec.Cmd, mnt bool) error {
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+	}
+	var files []*os.File
+	for _, n := range []string{"pid", "net"} {
+		fn := filepath.Join("/proc", strconv.Itoa(ns.pid), "ns", n)
+		f, err := os.Open(fn)
+		if err != nil {
+			return errors.Wrapf(err, "failed to open %v", fn)
+		}
+		files = append(files, f)
+		defer f.Close()
+		cmd.Env = append(cmd.Env, fmt.Sprintf("_TESTNS_SET_%sNS=%v", strings.ToUpper(n), len(files)+2))
+	}
+	if mnt == true {
+		f, err := ns.getMountNS()
+		if err != nil {
+			return err
+		}
+		files = append(files, f)
+		cmd.Env = append(cmd.Env, fmt.Sprintf("_TESTNS_SET_MNTNS=%v", len(files)+2))
+	}
+	cmd.Args = append([]string{reexecRun, cmd.Path}, cmd.Args...)
+	cmd.Path = "/proc/self/exe"
+	cmd.ExtraFiles = files
+	return cmd.Start()
+}
+
+func (ns *Namespace) getMountNS() (*os.File, error) {
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+
+	if ns.mntns != nil {
+		return ns.mntns, nil
+	}
+	pr, pw := io.Pipe()
+	cmd := &exec.Cmd{
+		Path:   "/proc/self/exe",
+		Args:   []string{reexecCreateMntNS},
+		Stdin:  pr,
+		Stderr: os.Stderr,
+	}
+	var stdout io.Reader
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to get stdout pipe")
+	}
+	stdout = io.TeeReader(stdout, os.Stderr)
+	if err := ns.cmdStart(cmd, false); err != nil {
+		return nil, errors.Wrapf(err, "failed to start process")
+	}
+	var fn string
+	if err := json.NewDecoder(stdout).Decode(&fn); err != nil {
+		return nil, errors.Wrapf(err, "failed to parse mountns path")
+	}
+	f, err := os.Open(fn)
+	if err != nil {
+		cmd.Process.Kill()
+		return nil, errors.Wrapf(err, "failed to open %v", fn)
+	}
+	pw.Close()
+	if err := cmd.Wait(); err != nil {
+		f.Close()
+		return nil, errors.Wrapf(err, "process exited with error")
+	}
+	ns.mntns = f
+	return ns.mntns, nil
 }
 
 type Command struct {
@@ -363,10 +434,8 @@ func (c *Command) Start() (err error) {
 		return errors.Errorf("command already started")
 	}
 	c.started = true
-	cmd := *c.Cmd
-	cmd.ExtraFiles = nil
-	cmd.SysProcAttr = nil
 
+	cmd := *c.Cmd
 	c.logInc++
 	var closeOnError []io.Closer
 
@@ -395,10 +464,7 @@ func (c *Command) Start() (err error) {
 	}
 	closeOnError = append(closeOnError, l)
 
-	cmd.Path = "/proc/self/exe" // todo: cross-platform
-	cmd.Args = append([]string{reExecName, strconv.Itoa(c.ns.pid), c.Cmd.Path}, c.Args...)
-
-	if err := cmd.Start(); err != nil {
+	if err := c.ns.cmdStart(&cmd, true); err != nil {
 		return errors.Wrapf(err, "could not start process %+v", cmd.Args)
 	}
 	c.Cmd.Process = cmd.Process

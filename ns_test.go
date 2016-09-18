@@ -35,8 +35,44 @@ func (s *TestSuite) TestSimple(c *check.C) {
 	c.Assert(ns, checkers.NotNil)
 
 	cmd := ns.Command("ps", "aux")
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+
 	// cmd := ns.Command("ip", "a")
 	// cmd := ns.Command("dockerd", "-D", "-s", "overlay", "-g", "/tmp/foo", "--pidfile", "/tmp/foo/docker.pid", "-H", "unix:///tmp/foo/docker.sock", "--exec-root", "/tmp/foo/exec")
 	err = cmd.Run()
+
+	cmd = ns.Command("ls", "-l", "/proc/self/ns")
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+
+	// cmd := ns.Command("ip", "a")
+	// cmd := ns.Command("dockerd", "-D", "-s", "overlay", "-g", "/tmp/foo", "--pidfile", "/tmp/foo/docker.pid", "-H", "unix:///tmp/foo/docker.sock", "--exec-root", "/tmp/foo/exec")
+	err = cmd.Run()
+
+	cmd = ns.Command("ls", "-l", "/proc/self/ns")
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+
+	// cmd := ns.Command("ip", "a")
+	// cmd := ns.Command("dockerd", "-D", "-s", "overlay", "-g", "/tmp/foo", "--pidfile", "/tmp/foo/docker.pid", "-H", "unix:///tmp/foo/docker.sock", "--exec-root", "/tmp/foo/exec")
+	err = cmd.Run()
+
+	cmd = ns.Command("ifconfig")
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+
+	// cmd := ns.Command("ip", "a")
+	// cmd := ns.Command("dockerd", "-D", "-s", "overlay", "-g", "/tmp/foo", "--pidfile", "/tmp/foo/docker.pid", "-H", "unix:///tmp/foo/docker.sock", "--exec-root", "/tmp/foo/exec")
+	err = cmd.Run()
+
+	cmd = ns.Command("mount")
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+
+	// cmd := ns.Command("ip", "a")
+	// cmd := ns.Command("dockerd", "-D", "-s", "overlay", "-g", "/tmp/foo", "--pidfile", "/tmp/foo/docker.pid", "-H", "unix:///tmp/foo/docker.sock", "--exec-root", "/tmp/foo/exec")
+	err = cmd.Run()
+
 	c.Assert(err, checkers.IsNil)
 }
