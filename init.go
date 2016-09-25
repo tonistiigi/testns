@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -27,6 +28,7 @@ import "C"
 
 const reexecRun = "testns-run-in-namespace"
 const reexecCreateMntNS = "testns-create-mntns"
+const reexecCreateBinds = "testns-create-binds"
 const dockerdBinary = "dockerd"
 
 type bind struct {
@@ -46,6 +48,19 @@ func createMountNS() error {
 	return nil
 }
 
+func createBinds(conf string) error {
+	var binds []bind
+	if err := json.Unmarshal([]byte(conf), &binds); err != nil {
+		return errors.Wrapf(err, "failed to unmarshal: %v", conf)
+	}
+	for _, b := range binds {
+		if err := syscall.Mount(b.Src, b.Target, "", uintptr(syscall.MS_BIND), ""); err != nil {
+			return errors.Wrapf(err, "could not bind %v to %v", b.Src, b.Target)
+		}
+	}
+	return nil
+}
+
 func run(path string, args []string) error {
 	if pidns := os.Getenv("_TESTNS_SET_PIDNS"); pidns != "" {
 		fd, err := strconv.Atoi(pidns)
@@ -57,13 +72,6 @@ func run(path string, args []string) error {
 		}
 	}
 
-	// for _, b := range conf.binds {
-	// 	if isSameFile(b.Str, b.Target) {
-	// 		if err := syscall.Mount("none", b.Src, b.Target, uintptr(syscall.MS_BIND), ""); err != nil {
-	// 			return errors.Wrapf(err, "could not bind %v to %v", b.Src, b.Target)
-	// 		}
-	// 	}
-	// }
 	cmd := &exec.Cmd{
 		Path:        path,
 		Args:        args,
@@ -90,16 +98,23 @@ func run(path string, args []string) error {
 	}
 	if args[0] == reexecCreateMntNS {
 		if err := json.NewEncoder(os.Stdout).Encode(filepath.Join("/proc", strconv.Itoa(cmd.Process.Pid), "/ns/mnt")); err != nil {
-			cmd.Process.Kill()
+			// cmd.Process.Kill()
 			return errors.Wrapf(err, "error encoding to json")
 		}
 	}
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c)
+		for s := range c {
+			cmd.Process.Signal(s)
+		}
+	}()
 	return cmd.Wait()
 }
 
 func init() {
 	switch os.Args[0] {
-	case reexecCreateMntNS, reexecRun:
+	case reexecCreateMntNS, reexecRun, reexecCreateBinds:
 	default:
 		return
 	}
@@ -110,9 +125,14 @@ func init() {
 			log.Printf("error creating mount ns: %+v", err)
 			os.Exit(1)
 		}
+	case reexecCreateBinds:
+		if err := createBinds(os.Args[1]); err != nil {
+			log.Printf("failed to create binds: %+v", err)
+			os.Exit(1)
+		}
 	case reexecRun:
 		if err := run(os.Args[1], os.Args[2:]); err != nil {
-			log.Printf("error runnin in ns: %+v", err)
+			log.Printf("error running in ns: %+v", err)
 			if err, ok := err.(*exec.ExitError); ok {
 				if ws, ok := err.Sys().(syscall.WaitStatus); ok {
 					os.Exit(ws.ExitStatus())
@@ -122,18 +142,4 @@ func init() {
 		}
 	}
 	os.Exit(0)
-}
-
-func isSameFile(f1, f2 string) bool {
-	fi1, err := os.Lstat(f1)
-	if err != nil {
-		return false
-	}
-	fi2, err := os.Lstat(f2)
-	if err != nil {
-		return false
-	}
-	st1 := fi1.Sys().(*syscall.Stat_t)
-	st2 := fi2.Sys().(*syscall.Stat_t)
-	return st1.Dev == st2.Dev && st1.Ino == st2.Ino
 }

@@ -1,6 +1,7 @@
 package testns
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -64,15 +65,6 @@ func NewPool(root string) (*Pool, error) {
 	if err := os.MkdirAll(root, 0600); err != nil {
 		return nil, errors.Wrapf(err, "failed to create %v", root)
 	}
-
-	// storagePath := filepath.Join(config.Root, "storage")
-	// if config.Storage == nil {
-	// 	storage, err := NewSharedStorage(storagePath)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	config.Storage = storage
-	// }
 
 	// directory structure
 	// /
@@ -147,7 +139,7 @@ func NewPool(root string) (*Pool, error) {
 		cancel()
 	}()
 
-	if err := p.waitAPIReady(ctx); err != nil {
+	if err := waitAPIReady(ctx, p.socket()); err != nil {
 		return nil, err
 	}
 
@@ -181,10 +173,10 @@ func (p *Pool) dockerCommand(args ...string) *exec.Cmd {
 	return exec.Command("docker", append([]string{"-H", p.socket()}, args...)...)
 }
 
-func (p *Pool) waitAPIReady(ctx context.Context) error {
+func waitAPIReady(ctx context.Context, socket string) error {
 loop0:
 	for i := 0; ; i++ {
-		_, err := sockRequestRawToDaemon(ctx, "GET", "/_ping", nil, "", p.socket())
+		_, err := sockRequestRawToDaemon(ctx, "GET", "/_ping", nil, "", socket)
 		if err != nil {
 			if err == context.Canceled || i > 30 {
 				return errors.Wrapf(err, "could not reach /_ping")
@@ -261,7 +253,7 @@ func (p *Pool) NewNamespace(config NamespaceConfig) (*Namespace, error) {
 	ns := &Namespace{
 		config: config,
 		pool:   p,
-		id:     strings.TrimSpace(string(out)),
+		id:     strings.TrimSpace(string(out))[:14],
 	}
 
 	cmd = p.dockerCommand("inspect", "--format", "{{.State.Pid}}", ns.id)
@@ -341,7 +333,9 @@ func (ns *Namespace) Gateway() string {
 }
 
 func (ns *Namespace) Close() error {
-	return fmt.Errorf("ns.Close() not implemented")
+	// Not mandatory but releases resources before pool is closed
+	err := ns.pool.dockerCommand("rm", "-f", ns.id).Run()
+	return errors.Wrapf(err, "failed to close namespace")
 }
 
 func (ns *Namespace) cmdStart(cmd *exec.Cmd, mnt bool) error {
@@ -370,7 +364,7 @@ func (ns *Namespace) cmdStart(cmd *exec.Cmd, mnt bool) error {
 	cmd.Args = append([]string{reexecRun, cmd.Path}, cmd.Args...)
 	cmd.Path = "/proc/self/exe"
 	cmd.ExtraFiles = files
-	return cmd.Start()
+	return errors.Wrapf(cmd.Start(), "failed to start wrapped command")
 }
 
 func (ns *Namespace) getMountNS() (*os.File, error) {
@@ -387,12 +381,10 @@ func (ns *Namespace) getMountNS() (*os.File, error) {
 		Stdin:  pr,
 		Stderr: os.Stderr,
 	}
-	var stdout io.Reader
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to get stdout pipe")
 	}
-	stdout = io.TeeReader(stdout, os.Stderr)
 	if err := ns.cmdStart(cmd, false); err != nil {
 		return nil, errors.Wrapf(err, "failed to start process")
 	}
@@ -402,7 +394,7 @@ func (ns *Namespace) getMountNS() (*os.File, error) {
 	}
 	f, err := os.Open(fn)
 	if err != nil {
-		cmd.Process.Kill()
+		// cmd.Process.Kill()
 		return nil, errors.Wrapf(err, "failed to open %v", fn)
 	}
 	pw.Close()
@@ -562,4 +554,35 @@ func (c *Command) Wait() error {
 	}
 	c.Cmd.ProcessState = c.cmd.ProcessState
 	return err
+}
+
+// form stdlib:
+
+// Output runs the command and returns its standard output.
+// Any returned error will usually be of type *ExitError.
+// If c.Stderr was nil, Output populates ExitError.Stderr.
+func (c *Command) Output() ([]byte, error) {
+	if c.Stdout != nil {
+		return nil, errors.New("exec: Stdout already set")
+	}
+	var stdout bytes.Buffer
+	c.Stdout = &stdout
+	err := c.Run()
+	return stdout.Bytes(), err
+}
+
+// CombinedOutput runs the command and returns its combined standard
+// output and standard error.
+func (c *Command) CombinedOutput() ([]byte, error) {
+	if c.Stdout != nil {
+		return nil, errors.New("exec: Stdout already set")
+	}
+	if c.Stderr != nil {
+		return nil, errors.New("exec: Stderr already set")
+	}
+	var b bytes.Buffer
+	c.Stdout = &b
+	c.Stderr = &b
+	err := c.Run()
+	return b.Bytes(), err
 }

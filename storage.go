@@ -103,7 +103,7 @@ func (s *sharedStoragePath) Release() {
 }
 
 func randomID() string {
-	b := make([]byte, 16)
+	b := make([]byte, 8)
 	rand.Read(b)
 	return hex.EncodeToString(b)
 }

@@ -68,6 +68,6 @@ func (s *TestSuite) TestSharedStorage(c *check.C) {
 
 func (s *TestSuite) TestRandomID(c *check.C) {
 	id := randomID()
-	c.Assert(id, checkers.HasLen, 32)
+	c.Assert(id, checkers.HasLen, 16)
 	c.Assert(id, checkers.Not(checkers.Equals), randomID())
 }
