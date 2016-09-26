@@ -119,6 +119,7 @@ func NewPool(root string) (*Pool, error) {
 	if err != nil {
 		return nil, err
 	}
+	// cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		unmount()
 		return nil, errors.Wrapf(err, "failed to start %v %v", cmd.Path, cmd.Args)
@@ -147,8 +148,8 @@ func NewPool(root string) (*Pool, error) {
 	defer imageData.Close()
 	cmd = p.dockerCommand("load")
 	cmd.Stdin = imageData
-	cmd.Stdout = os.Stderr // todo: where to log this?
-	cmd.Stderr = os.Stderr
+	// cmd.Stdout = os.Stderr // todo: where to log this?
+	// cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return nil, errors.Wrapf(err, "error loading base image")
 	}
@@ -231,6 +232,7 @@ type Namespace struct {
 	id     string
 	pid    int
 	mntns  *os.File
+	ip     string
 }
 
 func (p *Pool) NewNamespace(config NamespaceConfig) (*Namespace, error) {
@@ -267,6 +269,12 @@ func (p *Pool) NewNamespace(config NamespaceConfig) (*Namespace, error) {
 	}
 	ns.pid = pid
 
+	cmd = p.dockerCommand("inspect", "--format", "{{.NetworkSettings.Networks.bridge.IPAddress}}", ns.id)
+	out, err = cmd.Output()
+	if err != nil {
+		return nil, errors.Wrapf(err, "could not inspect container")
+	}
+	ns.ip = strings.TrimSpace(string(out))
 	return ns, nil
 }
 
@@ -325,7 +333,7 @@ func (ns *Namespace) ID() string {
 }
 
 func (ns *Namespace) IP() string {
-	return ""
+	return ns.ip
 }
 
 func (ns *Namespace) Gateway() string {
@@ -394,7 +402,7 @@ func (ns *Namespace) getMountNS() (*os.File, error) {
 	}
 	f, err := os.Open(fn)
 	if err != nil {
-		// cmd.Process.Kill()
+		cmd.Process.Kill()
 		return nil, errors.Wrapf(err, "failed to open %v", fn)
 	}
 	pw.Close()

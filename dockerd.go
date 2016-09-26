@@ -109,8 +109,12 @@ func (d *DockerD) StorageDir() string {
 func (d *DockerD) ExecDir() string {
 	return filepath.Join(d.Dir(), "docker-exec")
 }
-func (d *DockerD) socket() string {
+func (d *DockerD) Socket() string {
 	return "unix://" + filepath.Join(d.ExecDir(), "docker.sock")
+}
+
+func (d *DockerD) Namespace() *Namespace {
+	return d.ns
 }
 
 func (d *DockerD) Start(args ...string) error {
@@ -152,7 +156,7 @@ func (d *DockerD) Start(args ...string) error {
 		cancel()
 	}()
 
-	if err := waitAPIReady(ctx, d.socket()); err != nil {
+	if err := waitAPIReady(ctx, d.Socket()); err != nil {
 		return errors.Wrapf(err, "failed to connect to daemon")
 	}
 

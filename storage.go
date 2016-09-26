@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding"
 	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -11,24 +12,9 @@ import (
 	"github.com/pkg/errors"
 )
 
-// func (c *sharedStoragePathConfig) Equals(c2 *sharedStoragePathConfig) bool {
-// 	if c.driver != c2.driver {
-// 		return false
-// 	}
-// 	if len(c.frozenImages) != len(c2.frozenImages) {
-// 		return false
-// 	}
-// 	for i := range c.frozenImages {
-// 		if c.frozenImages[i] != c2.frozenImages[i] {
-// 			return false
-// 		}
-// 	}
-// 	return true
-// }
-
 type Storage interface {
 	Get(encoding.TextMarshaler) (ReleasableStoragePath, error)
-	Clean() error
+	io.Closer
 }
 
 type ReleasableStoragePath interface {
@@ -90,7 +76,7 @@ func (s *sharedStorage) release(sp *sharedStoragePath) {
 	sp.used = false
 }
 
-func (s *sharedStorage) Clean() error {
+func (s *sharedStorage) Close() error {
 	return os.RemoveAll(s.root)
 }
 

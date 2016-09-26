@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/tonistiigi/daemons/baseimage"
+	"github.com/tonistiigi/testns/baseimage"
 )
 
 func main() {

@@ -60,7 +60,7 @@ func (s *TestSuite) TestSharedStorage(c *check.C) {
 
 	c.Assert(sp7.Path(), checkers.Equals, sp1.Path())
 
-	c.Assert(ss.Clean(), checkers.IsNil)
+	c.Assert(ss.Close(), checkers.IsNil)
 	_, err = os.Stat(tmpDir)
 	c.Assert(err, checkers.NotNil)
 	c.Assert(os.IsNotExist(err), checkers.True)

@@ -62,6 +62,9 @@ func createBinds(conf string) error {
 }
 
 func run(path string, args []string) error {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c)
+
 	if pidns := os.Getenv("_TESTNS_SET_PIDNS"); pidns != "" {
 		fd, err := strconv.Atoi(pidns)
 		if err != nil {
@@ -98,18 +101,17 @@ func run(path string, args []string) error {
 	}
 	if args[0] == reexecCreateMntNS {
 		if err := json.NewEncoder(os.Stdout).Encode(filepath.Join("/proc", strconv.Itoa(cmd.Process.Pid), "/ns/mnt")); err != nil {
-			// cmd.Process.Kill()
+			cmd.Process.Kill()
 			return errors.Wrapf(err, "error encoding to json")
 		}
 	}
-	go func() {
-		c := make(chan os.Signal, 1)
-		signal.Notify(c)
-		for s := range c {
-			cmd.Process.Signal(s)
+	for s := range c {
+		if s == syscall.SIGCHLD {
+			return cmd.Wait()
 		}
-	}()
-	return cmd.Wait()
+		cmd.Process.Signal(s)
+	}
+	return nil
 }
 
 func init() {
@@ -118,6 +120,7 @@ func init() {
 	default:
 		return
 	}
+	runtime.GOMAXPROCS(1)
 	runtime.LockOSThread()
 	switch os.Args[0] {
 	case reexecCreateMntNS:
